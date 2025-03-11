@@ -1,5 +1,6 @@
 #include "hv/hthreadpool.h"
 #include "hv/hv.h"
+#include "to_string.h"
 #include <gtest/gtest.h>
 #include <thread>
 #define private public
@@ -318,6 +319,8 @@ TEST_F(StdCpuTest, test_CalcAvgAndStd_serial_1)
     common::cpu::CalcAvgAndStd(g_v0, true, g_avg, g_std);
     EXPECT_EQ(g_avg.size(), g_vecSize);
     EXPECT_EQ(g_std.size(), g_vecSize);
+    std::cout << "g_avg: " << common::to_string(std::vector<float>(g_avg.begin(), g_avg.begin() + 10)) << std::endl;
+    std::cout << "g_std: " << common::to_string(std::vector<float>(g_std.begin(), g_std.begin() + 10)) << std::endl;
 }
 
 /*

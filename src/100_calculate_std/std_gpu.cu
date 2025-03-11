@@ -1,96 +1,173 @@
 #include "std_gpu.h"
+#include <cmath>
 #include <cuda_runtime.h>
+#include <deque>
 #include <iostream>
-#include <numeric>
+#include <vector>
 
 #define THREADS_PER_BLOCK 256
 
-// CUDA 计算均值 Kernel
-__global__ void compute_mean(const float* data, float* mean, int N)
+namespace common::gpu
 {
+
+// CUDA 核函数：批量计算均值
+__global__ void compute_mean_batch(const float* data, int* offsets, int* sizes, float* means, int N)
+{
+    int row = blockIdx.x;  // 每个 block 处理一个 vector
+    int tid = threadIdx.x;
+
+    int start = offsets[row];
+    int size  = sizes[row];
+
     __shared__ float sum[THREADS_PER_BLOCK];
-    int              tid       = threadIdx.x + blockIdx.x * blockDim.x;
-    int              local_tid = threadIdx.x;
 
-    sum[local_tid] = (tid < N) ? data[tid] : 0.0f;
-    __syncthreads();
-
-    // 归约求和
-    for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+    float local_sum = 0.0f;
+    for (int i = tid; i < size; i += blockDim.x)
     {
-        if (local_tid < stride)
-        {
-            sum[local_tid] += sum[local_tid + stride];
-        }
-        __syncthreads();
+        local_sum += data[start + i];
     }
 
-    if (local_tid == 0)
-    {
-        atomicAdd(mean, sum[0] / N);
-    }
-}
-
-// CUDA 计算方差 Kernel
-__global__ void compute_variance(const float* data, float mean, float* variance, int N)
-{
-    __shared__ float sum[THREADS_PER_BLOCK];
-    int              tid       = threadIdx.x + blockIdx.x * blockDim.x;
-    int              local_tid = threadIdx.x;
-
-    sum[local_tid] = (tid < N) ? (data[tid] - mean) * (data[tid] - mean) : 0.0f;
+    sum[tid] = local_sum;
     __syncthreads();
 
     for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
     {
-        if (local_tid < stride)
+        if (tid < stride)
         {
-            sum[local_tid] += sum[local_tid + stride];
+            sum[tid] += sum[tid + stride];
         }
         __syncthreads();
     }
 
-    if (local_tid == 0)
+    if (tid == 0)
     {
-        atomicAdd(variance, sum[0] / N);
+        means[row] = sum[0] / size;
     }
 }
 
-// 静态方法实现
-void CudaStats::ComputeMeanVariance(const std::vector<float>& data, float& mean, float& variance)
+// CUDA 核函数：批量计算标准差
+__global__ void compute_std_batch(
+    const float* data, int* offsets, int* sizes, const float* means, float* stddevs, int N)
 {
-    int N = data.size();
+    int row = blockIdx.x;
+    int tid = threadIdx.x;
+
+    int start = offsets[row];
+    int size  = sizes[row];
+
+    __shared__ float sum[THREADS_PER_BLOCK];
+
+    float mean      = means[row];
+    float local_sum = 0.0f;
+    for (int i = tid; i < size; i += blockDim.x)
+    {
+        float diff = data[start + i] - mean;
+        local_sum += diff * diff;
+    }
+
+    sum[tid] = local_sum;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+    {
+        if (tid < stride)
+        {
+            sum[tid] += sum[tid + stride];
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0)
+    {
+        stddevs[row] = sqrtf(sum[0] / size);
+    }
+}
+
+template <typename NestedContainer>
+static void CalcAvgAndStd(const NestedContainer& data,
+                          bool                   ignoreNonPositive,
+                          std::vector<float>&    outputAvg,
+                          std::vector<float>&    outputStd)
+{
+    outputAvg.clear();
+    outputStd.clear();
+
+    std::vector<float> flatData;
+    std::vector<int>   offsets;
+    std::vector<int>   sizes;
+
+    int currentOffset = 0;
+    for (const auto& vec : data)
+    {
+        std::vector<float> filteredData;
+        for (float val : vec)
+        {
+            if (!ignoreNonPositive || val > 0)
+            {
+                filteredData.push_back(val);
+            }
+        }
+
+        if (filteredData.empty())
+        {
+            outputAvg.push_back(0.0f);
+            outputStd.push_back(0.0f);
+            continue;
+        }
+
+        offsets.push_back(currentOffset);
+        sizes.push_back(filteredData.size());
+        flatData.insert(flatData.end(), filteredData.begin(), filteredData.end());
+        currentOffset += filteredData.size();
+    }
+
+    int totalSize = flatData.size();
+    int N         = sizes.size();  // 有效的 vector 数量
+
     if (N == 0)
     {
-        mean = variance = 0.0f;
         return;
     }
 
-    // 分配 GPU 内存
-    float *d_data, *d_mean, *d_variance;
-    cudaMalloc(( void** )&d_data, N * sizeof(float));
-    cudaMalloc(( void** )&d_mean, sizeof(float));
-    cudaMalloc(( void** )&d_variance, sizeof(float));
+    // 申请 GPU 内存
+    float *d_data, *d_means, *d_stddevs;
+    int *  d_offsets, *d_sizes;
+    cudaMalloc(&d_data, totalSize * sizeof(float));
+    cudaMalloc(&d_means, N * sizeof(float));
+    cudaMalloc(&d_stddevs, N * sizeof(float));
+    cudaMalloc(&d_offsets, N * sizeof(int));
+    cudaMalloc(&d_sizes, N * sizeof(int));
 
-    cudaMemcpy(d_data, data.data(), N * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemset(d_mean, 0, sizeof(float));
-    cudaMemset(d_variance, 0, sizeof(float));
+    cudaMemcpy(d_data, flatData.data(), totalSize * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_offsets, offsets.data(), N * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_sizes, sizes.data(), N * sizeof(int), cudaMemcpyHostToDevice);
 
-    // 计算块数
-    int blocksPerGrid = (N + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK;
-
-    // 运行均值计算
-    compute_mean<<<blocksPerGrid, THREADS_PER_BLOCK>>>(d_data, d_mean, N);
+    // 计算均值
+    compute_mean_batch<<<N, THREADS_PER_BLOCK>>>(d_data, d_offsets, d_sizes, d_means, N);
     cudaDeviceSynchronize();
-    cudaMemcpy(&mean, d_mean, sizeof(float), cudaMemcpyDeviceToHost);
 
-    // 运行方差计算
-    compute_variance<<<blocksPerGrid, THREADS_PER_BLOCK>>>(d_data, mean, d_variance, N);
+    // 计算标准差
+    compute_std_batch<<<N, THREADS_PER_BLOCK>>>(d_data, d_offsets, d_sizes, d_means, d_stddevs, N);
     cudaDeviceSynchronize();
-    cudaMemcpy(&variance, d_variance, sizeof(float), cudaMemcpyDeviceToHost);
+
+    // 取回数据
+    outputAvg.resize(N);
+    outputStd.resize(N);
+    cudaMemcpy(outputAvg.data(), d_means, N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(outputStd.data(), d_stddevs, N * sizeof(float), cudaMemcpyDeviceToHost);
 
     // 释放 GPU 资源
     cudaFree(d_data);
-    cudaFree(d_mean);
-    cudaFree(d_variance);
+    cudaFree(d_means);
+    cudaFree(d_stddevs);
+    cudaFree(d_offsets);
+    cudaFree(d_sizes);
 }
+
+// 显式实例化模板
+template void CalcAvgAndStd<std::vector<std::deque<float>>>(const std::vector<std::deque<float>>&,
+                                                            bool,
+                                                            std::vector<float>&,
+                                                            std::vector<float>&);
+
+}  // namespace common::gpu

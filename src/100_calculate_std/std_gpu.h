@@ -1,10 +1,11 @@
 #pragma once
-
 #include <vector>
 
-class CudaStats
+namespace common::gpu
 {
-public:
-    // 计算均值和方差的静态方法
-    static void ComputeMeanVariance(const std::vector<float>& data, float& mean, float& variance);
-};
+    template <typename NestedContainer>
+    void CalcAvgAndStd(const NestedContainer& data,
+                       bool                   ignoreNonPositive,
+                       std::vector<float>&    outputAvg,
+                       std::vector<float>&    outputStd);
+}  // namespace common::gpu
