@@ -12,3 +12,4 @@ if (ENABLE_GCOV)
 endif()
 
 add_subdirectory(ut)
+add_subdirectory(it)
