@@ -86,6 +86,20 @@ TEST_F(StdGpuTest, test_CalcAvgAndStd_serial_1)
               << std::endl;
 }
 
+// 没有小于等于0双入参标准差
+TEST_F(StdGpuTest, test_CalcAvgAndStd_serial_2)
+{
+    common::gpu::CalcAvgAndStd(g_v, false, g_avg, g_std);
+    EXPECT_EQ(g_avg.size(), g_vecSize);
+    EXPECT_EQ(g_std.size(), g_vecSize);
+    std::cout << "g_avg: "
+              << common::to_string(std::vector<float>(g_avg.begin(), g_avg.begin() + 10))
+              << std::endl;
+    std::cout << "g_std: "
+              << common::to_string(std::vector<float>(g_std.begin(), g_std.begin() + 10))
+              << std::endl;
+}
+
 int main(int argc, char** argv)
 {
     if (argc < 3)

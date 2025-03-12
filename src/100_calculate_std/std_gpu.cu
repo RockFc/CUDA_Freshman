@@ -13,7 +13,7 @@ namespace common::gpu
 // CUDA 核函数：批量计算均值
 __global__ void compute_mean_batch(const float* data, int* offsets, int* sizes, float* means, int N)
 {
-    int row = blockIdx.x;  // 每个 block 处理一个 vector
+    int row = blockIdx.x;
     int tid = threadIdx.x;
 
     int start = offsets[row];
@@ -92,53 +92,62 @@ static void CalcAvgAndStd(const NestedContainer& data,
     outputAvg.clear();
     outputStd.clear();
 
-    std::vector<float> flatData;
-    std::vector<int>   offsets;
-    std::vector<int>   sizes;
+    std::vector<int> sizes;
+    int              totalFilteredSize = 0;
 
-    int currentOffset = 0;
+    // 预先计算总大小
     for (const auto& vec : data)
     {
-        std::vector<float> filteredData;
+        int filteredSize = 0;
         for (float val : vec)
         {
             if (!ignoreNonPositive || val > 0)
             {
-                filteredData.push_back(val);
+                filteredSize++;
             }
         }
-
-        if (filteredData.empty())
-        {
-            outputAvg.push_back(0.0f);
-            outputStd.push_back(0.0f);
-            continue;
-        }
-
-        offsets.push_back(currentOffset);
-        sizes.push_back(filteredData.size());
-        flatData.insert(flatData.end(), filteredData.begin(), filteredData.end());
-        currentOffset += filteredData.size();
+        sizes.push_back(filteredSize);
+        totalFilteredSize += filteredSize;
     }
 
-    int totalSize = flatData.size();
-    int N         = sizes.size();  // 有效的 vector 数量
-
-    if (N == 0)
+    if (totalFilteredSize == 0)
     {
+        outputAvg.resize(data.size(), 0.0f);
+        outputStd.resize(data.size(), 0.0f);
         return;
     }
+
+    std::vector<float> flatData(totalFilteredSize);
+    std::vector<int>   offsets(data.size());
+
+    int currentOffset = 0;
+    for (size_t i = 0; i < data.size(); ++i)
+    {
+        offsets[i] = currentOffset;
+        int index  = 0;
+        for (float val : data[i])
+        {
+            if (!ignoreNonPositive || val > 0)
+            {
+                flatData[currentOffset + index] = val;
+                index++;
+            }
+        }
+        currentOffset += sizes[i];
+    }
+
+    int N = data.size();
 
     // 申请 GPU 内存
     float *d_data, *d_means, *d_stddevs;
     int *  d_offsets, *d_sizes;
-    cudaMalloc(&d_data, totalSize * sizeof(float));
+    cudaMalloc(&d_data, totalFilteredSize * sizeof(float));
     cudaMalloc(&d_means, N * sizeof(float));
     cudaMalloc(&d_stddevs, N * sizeof(float));
     cudaMalloc(&d_offsets, N * sizeof(int));
     cudaMalloc(&d_sizes, N * sizeof(int));
 
-    cudaMemcpy(d_data, flatData.data(), totalSize * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_data, flatData.data(), totalFilteredSize * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_offsets, offsets.data(), N * sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_sizes, sizes.data(), N * sizeof(int), cudaMemcpyHostToDevice);
 
