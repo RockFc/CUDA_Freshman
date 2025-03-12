@@ -2,6 +2,10 @@ cmake_minimum_required(VERSION 3.20 FATAL_ERROR)
 project(CUDA_Freshman CXX C CUDA)
 
 find_package(CUDAToolkit REQUIRED)
+message(STATUS "CUDA Toolkit Found")
+message(STATUS "CUDAToolkit_INCLUDE_DIRS: ${CUDAToolkit_INCLUDE_DIRS}")
+message(STATUS "CUDAToolkit_LIBRARY_DIR: ${CUDAToolkit_LIBRARY_DIR}")
+message(STATUS "CUDAToolkit_BIN_DIR: ${CUDAToolkit_BIN_DIR}")
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
